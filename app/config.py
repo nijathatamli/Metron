@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     APP_NAME: str = "Metron API"
     APP_VERSION: str = "1.0.0"
-    DEBUG: bool = False
+    DEBUG: str | bool = False
 
     # PostgreSQL
     DATABASE_URL: str = "postgresql+asyncpg://metron:metron@localhost:5432/metron"

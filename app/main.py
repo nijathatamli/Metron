@@ -7,6 +7,7 @@ Start with:
 
 from __future__ import annotations
 
+import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -24,44 +25,74 @@ from app.config import settings
 _coin_bundle = None
 COIN_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "coin_model.pkl")
 
-# Coin class → coin amount mapping (0=peak → 3=off-peak)
-COIN_MAP = {0: 0, 1: 10, 2: 20, 3: 40}
+# Subway fee factor used to compute reward percentage from predicted density
+# reward_pct = round(100 - density_pct * SUBWAY_FEE_FACTOR)
+SUBWAY_FEE_FACTOR = 0.6
 
 
 def _load_coin_model():
     global _coin_bundle
     path = os.path.abspath(COIN_MODEL_PATH)
     _coin_bundle = joblib.load(path)
-    print(f"✓ Loaded {_coin_bundle['model_name']} from {path}")
+    print(f"Loaded {_coin_bundle['model_name']} from {path}")
     print(f"  Stations: {len(_coin_bundle['valid_stations'])}")
     print(f"  Features: {len(_coin_bundle['feature_columns'])}")
 
 
-def _predict_coins(station: str, hour: int, minute: int, month: int, dayofweek: int) -> int:
-    """Run coin_model.pkl and return predicted coin class (0-3)."""
+def _predict_reward_pct(station: str, hour: int, minute: int, month: int, dayofweek: int) -> float:
+    """Predict density percentile then return bonus amount.
+
+    Formula:
+        reward_pct = 100 - density_pct * SUBWAY_FEE_FACTOR   (range ~40-100)
+        bonus     = (reward_pct / 2) * SUBWAY_FEE_FACTOR / 100  (range ~0.12-0.30)
+    """
     if hour < 6:
-        return 0  # metro closed
+        return 0.0  # metro closed
 
     # Round minute to nearest 15
     minute = (minute // 15) * 15
     is_weekend = 1 if dayofweek >= 5 else 0
 
-    # Build feature row
     cols = _coin_bundle["feature_columns"]
     row = {c: 0 for c in cols}
     row["hour"] = hour
     row["minute"] = minute
-    row["dayofweek"] = dayofweek
-    row["is_weekend"] = is_weekend
-    row["month"] = month
+    if "is_weekend" in row:
+        row["is_weekend"] = is_weekend
 
-    # One-hot encode station (drop_first was used → first station "20 Yanvar" is dropped)
     station_col = f"station_{station}"
     if station_col in row:
         row[station_col] = 1
 
     df = pd.DataFrame([row])
-    return int(_coin_bundle["model"].predict(df)[0])
+    raw_density = float(_coin_bundle["model"].predict(df)[0])
+    
+    # Custom mapping to hit exact behavioral targets based on real 28-May densities:
+    # 06:00 (d=5) -> 0.20
+    # 07:30 (d=20) -> 0.16
+    # 07:45 (d=24) -> 0.11
+    # 08:00 (d=38) -> 0.05
+    # 12:00 (d=46) -> 0.04
+    # 18:00 (d=85) -> 0.01
+    
+    if raw_density <= 5.0:
+        bonus = 0.20
+    elif raw_density <= 20.0:
+        # map 5..20 to 0.20..0.16
+        bonus = 0.20 - (raw_density - 5.0) / 15.0 * 0.04
+    elif raw_density <= 24.0:
+        # cliff part 1: map 20..24 to 0.16..0.11
+        bonus = 0.16 - (raw_density - 20.0) / 4.0 * 0.05
+    elif raw_density <= 38.0:
+        # cliff part 2: map 24..38 to 0.11..0.05
+        bonus = 0.11 - (raw_density - 24.0) / 14.0 * 0.06
+    elif raw_density <= 85.0:
+        # long tail: map 38..85 to 0.05..0.01
+        bonus = 0.05 - (raw_density - 38.0) / 47.0 * 0.04
+    else:
+        bonus = 0.01
+        
+    return round(bonus, 2)
 
 
 # ── Lifespan — load model once ──────────────────────────────────────────────
@@ -103,6 +134,7 @@ class PredictRequest(BaseModel):
     hour: int = Field(..., ge=0, le=23)
     minute: int = Field(..., ge=0, le=59)
     added_minutes: int = Field(0, ge=0, le=60)
+    date: Optional[str] = Field(None, description="Optional date 'YYYY-MM-DD'. If omitted, today is used.")
 
 
 class PartnerOut(BaseModel):
@@ -117,11 +149,11 @@ class PredictResponse(BaseModel):
     station: str
     time_now: str
     time_shifted: str
-    coins_now: int
-    coins_if_wait: int
-    extra_coins: int
-    coin_class_now: int
-    coin_class_shifted: int
+    coins_now: float
+    coins_if_wait: float
+    extra_coins: float
+    coin_class_now: float
+    coin_class_shifted: float
     added_minutes: int
     partners: List[PartnerOut]
 
@@ -138,28 +170,34 @@ async def predict_reward(payload: PredictRequest):
     if payload.station not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown station. Valid: {valid}")
 
-    now = datetime.now().replace(hour=payload.hour, minute=payload.minute, second=0)
+    if payload.date:
+        try:
+            base_date = datetime.strptime(payload.date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format, expected YYYY-MM-DD")
+        now = base_date.replace(hour=payload.hour, minute=payload.minute, second=0)
+    else:
+        now = datetime.now().replace(hour=payload.hour, minute=payload.minute, second=0)
     shifted = now + timedelta(minutes=payload.added_minutes)
 
     month = now.month
     dow = now.weekday()
 
-    # Predict at current time
-    cls_now = _predict_coins(payload.station, now.hour, now.minute, month, dow)
-    coins_now = COIN_MAP[cls_now]
+    # Predict reward percentage at current time
+    coins_now = _predict_reward_pct(payload.station, now.hour, now.minute, month, dow)
+    cls_now = coins_now  # kept for schema compatibility
 
-    # Predict at shifted time
-    cls_shifted = _predict_coins(payload.station, shifted.hour, shifted.minute, month, dow)
-    coins_shifted = COIN_MAP[cls_shifted]
+    # Predict reward percentage at shifted time
+    coins_shifted = _predict_reward_pct(payload.station, shifted.hour, shifted.minute, month, dow)
+    cls_shifted = coins_shifted
 
     extra = coins_shifted - coins_now
 
-    # Filter partners by wait time
+    # Always return all partners regardless of wait time
     partners = [
         PartnerOut(name=p["name"], icon=p["icon"], category=p["category"],
                    offer=p["offer"], distance=p["distance"])
         for p in PARTNER_OFFERS
-        if p["min_wait"] <= payload.added_minutes
     ]
 
     return PredictResponse(

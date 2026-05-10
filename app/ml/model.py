@@ -1,130 +1,101 @@
 """
-Density prediction model — trains on synthetic data and exposes an inference
-function used by the FastAPI density endpoint.
+Trains a Random Forest regressor that predicts passenger density percentile
+(0-100) for a given (station, hour, minute, dayofweek, is_weekend, month).
 
-The model is a GradientBoostingRegressor that predicts density_score from
-(station one-hot, hour, day_of_week, is_weekend, direction).
+The main.py converts density_pct -> reward percentage using:
+    reward_pct = 100 - density_pct * 0.6
+(0.6 = subway fee factor)
 """
 
 from __future__ import annotations
 
 import os
-from datetime import datetime
-from typing import Optional
+import time
 
 import joblib
-import numpy as np
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.preprocessing import LabelEncoder
+import pandas as pd
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.metrics import r2_score
+from sklearn.model_selection import train_test_split
 
-from app.ml.training_data import STATIONS, generate_training_data
-
-# ── Label encoders (fitted at module level for consistency) ──────────────────
-
-_station_encoder = LabelEncoder()
-_station_encoder.fit([s["station_id"] for s in STATIONS])
-
-_direction_encoder = LabelEncoder()
-_direction_encoder.fit(["inbound", "outbound"])
-
-# ── Globals ──────────────────────────────────────────────────────────────────
-
-_model: Optional[GradientBoostingRegressor] = None
-_MODEL_PATH = os.getenv("ML_MODEL_PATH", "app/ml/density_model.joblib")
+CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "total_data_15min.csv")
+MODEL_OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "coin_model.pkl")
 
 
-def _featurise(
-    station_id: str,
-    hour: float,
-    day_of_week: int,
-    is_weekend: int,
-    direction: str,
-) -> np.ndarray:
-    """Convert raw inputs into a numeric feature vector."""
-    station_enc = _station_encoder.transform([station_id])[0]
-    direction_enc = _direction_encoder.transform([direction])[0]
-    return np.array(
-        [[station_enc, hour, day_of_week, is_weekend, direction_enc]],
-        dtype=np.float64,
+def train_and_save_model():
+    print(f"Loading data from {CSV_PATH}...")
+    if not os.path.exists(CSV_PATH):
+        raise FileNotFoundError(f"Missing {CSV_PATH}.")
+
+    df = pd.read_csv(CSV_PATH)
+    df['time_bin'] = pd.to_datetime(df['time_bin'])
+
+    # Feature engineering
+    df['hour'] = df['time_bin'].dt.hour
+    df['minute'] = df['time_bin'].dt.minute
+    df['is_weekend'] = df['time_bin'].dt.dayofweek.isin([5, 6]).astype(int)
+
+    # Filter to operating hours (6 to 23)
+    df = df[(df['hour'] >= 6) & (df['hour'] <= 23)].reset_index(drop=True)
+
+    print("Computing density percentile per (station, is_weekend)...")
+    # density_pct: percentile rank (0-100) of passenger_count within each station
+    # split by weekend vs weekday so weekend mornings don't dilute weekday peaks
+    df['density_pct'] = (
+        df.groupby(['station', 'is_weekend'])['passenger_count']
+          .rank(pct=True) * 100.0
     )
 
+    print("Aggregating per (station, is_weekend, hour, minute) slot...")
+    # average density across all dates for the same slot — sharp per-slot signal
+    df = (df.groupby(['station', 'is_weekend', 'hour', 'minute'], as_index=False)
+            ['density_pct'].mean())
 
-def train_model(save_path: Optional[str] = None) -> GradientBoostingRegressor:
-    """
-    Train the density model on synthetic data and persist the artifact.
+    # Features and target — station/hour/minute/is_weekend
+    features = ['station', 'hour', 'minute', 'is_weekend']
+    X = df[features].copy()
+    y = df['density_pct']
 
-    Args:
-        save_path: Where to write the .joblib file. Defaults to _MODEL_PATH.
+    print("One-hot encoding stations...")
+    X = pd.get_dummies(X, columns=['station'], drop_first=True)
 
-    Returns:
-        The trained model instance.
-    """
-    df = generate_training_data(days=30, seed=42)
+    valid_stations = sorted(df['station'].unique())
 
-    # Encode categorical columns
-    df["station_enc"] = _station_encoder.transform(df["station_id"])
-    df["direction_enc"] = _direction_encoder.transform(df["direction"])
+    # Train/test split for accuracy reporting
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
-    features = ["station_enc", "hour", "day_of_week", "is_weekend", "direction_enc"]
-    X = df[features].values
-    y = df["density_score"].values
-
-    model = GradientBoostingRegressor(
-        n_estimators=200,
-        max_depth=5,
-        learning_rate=0.1,
+    model = HistGradientBoostingRegressor(
+        max_iter=600,
+        max_depth=None,
+        learning_rate=0.05,
+        min_samples_leaf=3,
+        l2_regularization=0.0,
         random_state=42,
     )
-    model.fit(X, y)
 
-    path = save_path or _MODEL_PATH
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    joblib.dump(model, path)
-    print(f"Model saved → {path}")
+    print("Training HistGradientBoosting Regressor...")
+    start_time = time.time()
+    model.fit(X_train, y_train)
+    print(f"Training complete in {time.time() - start_time:.2f}s")
 
-    return model
+    train_r2 = r2_score(y_train, model.predict(X_train))
+    test_r2 = r2_score(y_test, model.predict(X_test))
+    print(f"  R² train: {train_r2:.4f}")
+    print(f"  R² test:  {test_r2:.4f}")
 
+    bundle = {
+        "model_name": "HistGradientBoosting Regressor (density %)",
+        "model": model,
+        "feature_columns": list(X.columns),
+        "valid_stations": valid_stations,
+        "r2_test": float(test_r2),
+    }
 
-def load_model(path: Optional[str] = None) -> GradientBoostingRegressor:
-    """Load a persisted model from disk (trains on the fly if missing)."""
-    global _model
-    if _model is not None:
-        return _model
-
-    target = path or _MODEL_PATH
-    if os.path.exists(target):
-        _model = joblib.load(target)
-    else:
-        # First run — train and cache
-        _model = train_model(save_path=target)
-    return _model
-
-
-def predict_density(
-    station_id: str,
-    timestamp: datetime,
-    direction: str,
-) -> float:
-    """
-    Predict the density score for a station / time / direction triple.
-
-    Returns:
-        A float clamped to [0.0, 1.0].
-    """
-    model = load_model()
-    hour = timestamp.hour + timestamp.minute / 60.0
-    day_of_week = timestamp.weekday()
-    is_weekend = int(day_of_week >= 5)
-
-    X = _featurise(station_id, hour, day_of_week, is_weekend, direction)
-    raw: float = float(model.predict(X)[0])
-    return round(float(np.clip(raw, 0.0, 1.0)), 4)
+    joblib.dump(bundle, MODEL_OUTPUT_PATH)
+    print(f"Model successfully saved to {MODEL_OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
-    train_model()
-    # Quick smoke test
-    ts = datetime(2024, 3, 15, 8, 30)
-    for sid in ["IC-01", "MY-02", "HA-08"]:
-        score = predict_density(sid, ts, "inbound")
-        print(f"{sid}  {ts.isoformat()}  inbound → density={score}")
+    train_and_save_model()

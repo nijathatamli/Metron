@@ -5,7 +5,7 @@ const API = 'http://localhost:8000'
 /* ── Real icon URLs from icons8 CDN ── */
 const ICONS = {
   nfc: 'https://img.icons8.com/ios-filled/50/ffffff/nfc-sign.png',
-  coin: 'https://img.icons8.com/3d-fluency/94/coin-wallet.png',
+  coin: '/coin.png',
   homeActive: 'https://img.icons8.com/ios-filled/50/1B8EF8/home--v1.png',
   home: 'https://img.icons8.com/ios/50/9CA3AF/home--v1.png',
   cardActive: 'https://img.icons8.com/ios-filled/50/1B8EF8/bank-card-back-side--v1.png',
@@ -44,9 +44,9 @@ function Img({ src, fallback, alt, style }) {
 
 /* ── Colors (Purple + White theme) ── */
 const C = {
-  bg: '#F5F0FF',
+  bg: '#FBF9FF',
   surface: '#FFFFFF',
-  border: '#E8E0F0',
+  border: '#EFEAF7',
   purple: '#6C3FC5',
   purpleDark: '#4A2D8A',
   purpleLight: '#EDE5FF',
@@ -124,6 +124,8 @@ export default function App() {
 
   const [baseHour, setBaseHour] = useState(8)
   const [baseMinute, setBaseMinute] = useState(30)
+  const [customDate, setCustomDate] = useState('') // '' = use today on backend
+  const [dateOpen, setDateOpen] = useState(false)
 
   /* load stations from API */
   useEffect(() => {
@@ -141,14 +143,14 @@ export default function App() {
       fetch(`${API}/predict-reward`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ station, hour: baseHour, minute: baseMinute, added_minutes: waitMin }),
+        body: JSON.stringify({ station, hour: baseHour, minute: baseMinute, added_minutes: waitMin, ...(customDate ? { date: customDate } : {}) }),
       })
         .then(r => r.json())
         .then(d => { setPrediction(d); setLoading(false) })
         .catch(() => setLoading(false))
     }, 150)
     return () => clearTimeout(debounceRef.current)
-  }, [station, waitMin, baseHour, baseMinute])
+  }, [station, waitMin, baseHour, baseMinute, customDate])
 
   const coinsNow = prediction?.coins_now ?? 0
   const coinsWait = prediction?.coins_if_wait ?? 0
@@ -175,7 +177,7 @@ export default function App() {
     },
     screen: {
       flex: 1, display: 'flex', flexDirection: 'column', borderRadius: 45,
-      overflow: 'hidden', background: `linear-gradient(180deg, ${C.bg} 0%, #E8DFFF 40%, ${C.white} 100%)`,
+      overflow: 'hidden', background: `linear-gradient(180deg, ${C.purple} 0%, ${C.purpleLight} 280px, ${C.white} 480px, ${C.white} 100%)`,
     },
     scroll: {
       flex: 1, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch',
@@ -199,7 +201,7 @@ export default function App() {
       border: `1px solid ${C.border}`, boxShadow: '0 2px 12px rgba(108,63,197,.08)',
     },
     earningsCard: {
-      background: C.greenBg, borderRadius: 20, padding: 20, marginBottom: 14,
+      background: C.greenBg, borderRadius: 20, padding: '10px 18px', marginBottom: 14,
       border: '1px solid #C8E8D8', boxShadow: '0 2px 12px rgba(34,192,122,.1)',
     },
     bottomNav: {
@@ -229,7 +231,7 @@ export default function App() {
       cursor: 'pointer', transition: 'all .2s',
     }),
     partnerCard: {
-      flexShrink: 0, width: 140, background: C.white, borderRadius: 16,
+      background: C.white, borderRadius: 16,
       padding: 14, border: `1px solid ${C.border}`, boxShadow: '0 2px 8px rgba(108,63,197,.06)',
     },
   }
@@ -270,6 +272,9 @@ export default function App() {
 
           <div style={s.content}>
 
+            {tab === 0 && (
+              <>
+
             {/* ═══ BAKIKART (real card image) ═══ */}
             <div style={s.bakikart}>
               <img
@@ -300,6 +305,41 @@ export default function App() {
             </div>
 
             <p style={{ textAlign: 'center', fontSize: 13, color: '#4A5568', margin: '-4px 0 12px' }}>Hold Near Reader to Pay</p>
+
+            {/* ═══ DATE PICKER (optional) ═══ */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <button
+                onClick={() => {
+                  if (dateOpen) { setCustomDate(''); setDateOpen(false) }
+                  else { setDateOpen(true) }
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                  background: dateOpen ? C.purple : C.purpleLight,
+                  color: dateOpen ? '#fff' : C.purple,
+                  border: 'none', borderRadius: 20, padding: '6px 12px',
+                  fontSize: 11, fontWeight: 700,
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                {dateOpen ? 'Use Today' : 'Pick Date'}
+              </button>
+              {dateOpen && (
+                <input
+                  type="date"
+                  value={customDate || new Date().toISOString().slice(0, 10)}
+                  onChange={e => setCustomDate(e.target.value)}
+                  style={{
+                    background: C.purpleLight, border: `1px solid ${C.border}`,
+                    borderRadius: 10, padding: '6px 10px', fontSize: 12, fontWeight: 600,
+                    color: C.text, fontFamily: "'JetBrains Mono', monospace", outline: 'none',
+                  }}
+                />
+              )}
+              {!dateOpen && (
+                <span style={{ fontSize: 11, color: C.muted }}>Today</span>
+              )}
+            </div>
 
             {/* ═══ STATION & TIME — side by side ═══ */}
             <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
@@ -350,15 +390,25 @@ export default function App() {
               </div>
             </div>
 
-            {/* ═══ WAIT PLANNER ═══ */}
+            {/* ═══ WAIT PLANNER (with inline coin earnings) ═══ */}
             <div style={s.section}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <div>
                   <h2 style={{ fontSize: 16, fontWeight: 700, color: C.text, margin: 0 }}>Wait & Earn</h2>
                   <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>Plan your wait for more coins</p>
                 </div>
-                <div style={s.pillBtn(true)}>
-                  +{waitMin} min
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  background: C.greenBg, border: '1px solid #C8E8D8',
+                  borderRadius: 20, padding: '6px 12px',
+                }}>
+                  <span style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 700,
+                    color: C.green, lineHeight: 1,
+                  }}>
+                    +{(waitMin === 0 ? coinsNow : coinsWait).toFixed(2)}
+                  </span>
+                  <Img src={ICONS.coin} fallback="M" alt="coin" style={{ width: 20, height: 20 }} />
                 </div>
               </div>
 
@@ -393,59 +443,43 @@ export default function App() {
                 </div>
               </div>
             </div>
+              </>
+            )}
 
-            {/* ═══ PREDICTED EARNINGS ═══ */}
-            <div style={s.earningsCard}>
-              <p style={{ fontSize: 12, fontWeight: 600, color: C.green, marginBottom: 10 }}>Predicted Earnings</p>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{
-                    fontFamily: "'JetBrains Mono', monospace", fontSize: 42, fontWeight: 700,
-                    color: C.green, lineHeight: 1,
-                  }}>
-                    +{waitMin === 0 ? coinsNow : coinsWait}
-                  </span>
-                  <Img src={ICONS.coin} fallback="M" alt="coin" style={{ width: 32, height: 32 }} />
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <p style={{ fontSize: 12, color: 'rgba(34,192,122,.7)', margin: 0, fontWeight: 500 }}>
-                    {waitMin === 0 ? 'Current time' : `For waiting`}
-                  </p>
-                  {waitMin > 0 && (
-                    <p style={{ fontSize: 12, color: 'rgba(34,192,122,.7)', margin: 0, fontWeight: 500 }}>
-                      {waitMin} mins
-                    </p>
+            {tab === 1 && (
+              <div style={{ marginBottom: 16 }}>
+                <h2 style={{ fontSize: 16, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>Nearby</h2>
+                <p style={{ fontSize: 12, color: C.muted, margin: '0 0 12px' }}>Spend your wait at these partners</p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, paddingBottom: 8 }}>
+                  {partners.length === 0 && (
+                    <div style={{ width: '100%', textAlign: 'center', color: C.muted, fontSize: 13, padding: '24px 0' }}>
+                      {loading ? 'Loading...' : 'Select a wait time on Home to see offers'}
+                    </div>
                   )}
+                  {partners.map((p, i) => (
+                    <div key={i} style={s.partnerCard}>
+                      <Img
+                        src={PARTNER_ICON_MAP[p.name] || ICONS.coffee}
+                        fallback={p.icon}
+                        alt={p.name}
+                        style={{ width: 40, height: 40, marginBottom: 8, borderRadius: 10 }}
+                      />
+                      <p style={{ fontSize: 12, fontWeight: 700, color: C.text, margin: '0 0 2px', lineHeight: 1.3 }}>{p.name}</p>
+                      <p style={{ fontSize: 10, color: C.muted, margin: '0 0 6px', lineHeight: 1.3 }}>{p.offer}</p>
+                      <p style={{ fontSize: 9, color: '#4A5568', margin: 0, fontWeight: 500 }}>{p.distance}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
-            </div>
+            )}
 
-            {/* ═══ SPEND YOUR WAIT ═══ */}
-            <div style={{ marginBottom: 16 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>Spend Your Wait</h2>
-              <p style={{ fontSize: 12, color: C.muted, margin: '0 0 12px' }}>Nearby Partners</p>
-
-              <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8, scrollbarWidth: 'none' }}>
-                {partners.length === 0 && (
-                  <div style={{ width: '100%', textAlign: 'center', color: C.muted, fontSize: 13, padding: '24px 0' }}>
-                    {loading ? 'Loading...' : 'Select a wait time to see offers'}
-                  </div>
-                )}
-                {partners.map((p, i) => (
-                  <div key={i} style={s.partnerCard}>
-                    <Img
-                      src={PARTNER_ICON_MAP[p.name] || ICONS.coffee}
-                      fallback={p.icon}
-                      alt={p.name}
-                      style={{ width: 40, height: 40, marginBottom: 8, borderRadius: 10 }}
-                    />
-                    <p style={{ fontSize: 12, fontWeight: 700, color: C.text, margin: '0 0 2px', lineHeight: 1.3 }}>{p.name}</p>
-                    <p style={{ fontSize: 10, color: C.muted, margin: '0 0 6px', lineHeight: 1.3 }}>{p.offer}</p>
-                    <p style={{ fontSize: 9, color: '#4A5568', margin: 0, fontWeight: 500 }}>{p.distance}</p>
-                  </div>
-                ))}
+            {tab === 2 && (
+              <div style={{ textAlign: 'center', padding: '40px 0', color: C.muted }}>
+                <p style={{ fontSize: 14, fontWeight: 600 }}>Profile</p>
+                <p style={{ fontSize: 12 }}>Coming soon</p>
               </div>
-            </div>
+            )}
 
           </div>{/* /content */}
         </div>{/* /scroll */}
@@ -454,7 +488,7 @@ export default function App() {
         <div style={s.bottomNav}>
           {[
             { label: 'Home', icon: ICONS.homeActive, iconOff: ICONS.home, fallback: 'H' },
-            { label: 'Virtual Card', icon: ICONS.cardActive, iconOff: ICONS.card, fallback: 'C' },
+            { label: 'Nearby', icon: ICONS.cardActive, iconOff: ICONS.card, fallback: 'C' },
             { label: 'Profile', icon: ICONS.profileActive, iconOff: ICONS.profile, fallback: 'P' },
           ].map((t, i) => (
             <button key={i} style={s.tabBtn(tab === i)} onClick={() => setTab(i)}>
